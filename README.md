@@ -2,6 +2,8 @@
 
 A system that evaluates programming assignment submissions by comparing them to an ideal answer using AI-powered semantic analysis.
 
+![example](https://github.com/user-attachments/assets/d5abd5eb-4b17-4df8-bb45-166abf702cb6)
+
 ## Prerequisites
 
 - Python 3.8+
