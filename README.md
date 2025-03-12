@@ -3,7 +3,8 @@
 A system that evaluates programming assignment submissions by comparing them to an ideal answer using AI-powered semantic analysis.
 ![image](https://github.com/user-attachments/assets/0ec61fd1-4b22-4be2-b16a-ef35997d423a)
 
-![example](https://github.com/user-attachments/assets/d5abd5eb-4b17-4df8-bb45-166abf702cb6)
+![image](https://github.com/user-attachments/assets/707c5b69-5d02-47f8-8d2d-4fa15859e5b5)
+
 
 ## Prerequisites
 
