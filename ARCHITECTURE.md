@@ -3,35 +3,70 @@
 ## System Architecture
 
 ```
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Web Browser   │────▶│  FastAPI Server  │────▶│  File Handler   │
-└─────────────────┘     └──────────────────┘     └─────────────────┘
-                               │                          │
-                               │                          ▼
-                               │                  ┌─────────────────┐
-                               │                  │  Code Parser    │
-                               │                  └─────────────────┘
-                               │                          │
-                               ▼                          ▼
-┌─────────────────┐      ┌──────────────────┐       ┌─────────────────┐
-│                 │      │ Vector Database  │       │   Embedding     │
-│  MongoDB Atlas  │◀───▶│    (MongoDB)     │◀───▶ │   Generator     │
-│                 │      │                  │       │                 │
-└─────────────────┘      └──────────────────┘       └─────────────────┘
-                               ▲      ▲                    ▲
-                               │      │                    │
-                               │      │                    │
-┌─────────────────┐      ┌─────┴──────┴───────┐      ┌─────┴────────┐
-│   Similarity    │◀───▶│  RAG Controller    │◀──▶ │  AI Models   │
-│   Calculator    │      │                    │      │              │
-└─────────────────┘      └────────────────────┘      │ ┌─────────┐  │
-                               │      ▲              │ │ Ollama  │  │
-                               │      │              │ │ Local   │  │
-                               ▼      │              │ └─────────┘  │
-┌─────────────────┐      ┌──────────────────┐        │ ┌─────────┐  │
-│    Results      │◀────│    Evaluation    │◀────   │ │ OpenAI  │  │
-│   Generator     │      │    Engine        │        │ │  API    │  │
-└─────────────────┘      └──────────────────┘        └──────────────┘
+┌─────────────────┐     (1)HTTP     ┌──────────────────┐    (2)Files    ┌─────────────────┐
+│   Web Browser   │────────────────▶│  FastAPI Server  │───────────────▶│  File Handler   │
+└─────────────────┘                 └──────────────────┘                 └─────────────────┘
+                                           │                                      │
+                                    (3)Route│                             (4)Parse│
+                                           │                                      ▼
+                                           │                             ┌─────────────────┐
+                                           │                             │  Code Parser    │
+                                           │                             └─────────────────┘
+                                           │                                      │
+                                           ▼                             (5)Code  ▼
+┌─────────────────┐    (8)Store     ┌──────────────────┐    (6)Generate   ┌─────────────────┐
+│                 │◀──────────────▶│ Vector Database  │◀──────────────▶│   Embedding     │
+│  MongoDB Atlas  │    /Retrieve   │    (MongoDB)      │    Vectors      │   Generator     │
+│                 │                │                   │                 │ [Code→Vector]   │ 
+│                 │                │                   │                 │    Ollama       │
+└─────────────────┘                └──────────────────┘                  └─────────────────┘
+                                        ▲      ▲                               ▲
+                                   (9)  │      │ (10)                         │
+                              Query     │      │ Results                      │(7)
+                                        │       │                             │Model
+┌─────────────────┐    (12)Compare  ┌─┴──────┴────────────┐     (11)Select   ┌┴────────────┐
+│   Similarity    │◀──────────────▶│  RAG Controller     │◀──────────────▶│  AI Models   │
+│   Calculator    │     [Cosine]    │                      │                │              │
+└─────────────────┘                 └──────────────────────┘                │ ┌─────────┐  │
+                                        │      ▲                            │ │ Ollama  │  │
+                                   (13) │      │ (14)                       │ │ 3.2:3B  │  │
+                                 Score  ▼      │ Update                     │ └─────────┘  │
+┌─────────────────┐    (16)Format  ┌──────────────────┐     (15)Process     │ ┌────or───┐  │
+│    Results      │◀──────────────│    Evaluation     │◀─────────────────  │ │ OpenAI  │  │
+│   Generator     │                │ Engine [Semantic] │                    │ │         │  │
+└─────────────────┘                └──────────────────┘                     └──────────────┘
+
+Arrow Legend:
+(1)  HTTP: User requests and responses
+(2)  Files: ZIP file transfer
+(3)  Route: Request routing and handling
+(4)  Parse: File extraction and parsing
+(5)  Code: Extracted function code
+(6)  Generate Vectors: Embedding generation request/response
+(7)  Model: AI model selection and usage
+(8)  Store/Retrieve: Vector database operations
+(9)  Query: Vector similarity search
+(10) Results: Search results and matches
+(11) Select: Model selection and configuration
+(12) Compare: Similarity computation
+(13) Score: Similarity scores
+(14) Update: Result updates
+(15) Process: Embedding processing
+(16) Format: Result formatting for display
+
+Key Methods:
+- Similarity Calculation: Cosine Distance
+- Evaluation Method: Semantic Comparison
+- Embedding Generation:
+  * Default: Llama 3.2:3B (Local)
+    - Via Ollama API
+    - Variable dimensions
+    - No API key needed
+  * Alternative: text-embedding-ada-002 (OpenAI)
+    - 1536 dimensions
+    - Requires API key
+    - Higher accuracy
+- Code Processing: AST → Text → Embeddings
 ```
 
 ## Component Description

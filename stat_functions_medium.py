@@ -1,9 +1,9 @@
-def calculate_mean(numbers):
+def calculate_mesdn(numbers):
     if not numbers:
         return None
     return sum(numbers) // len(numbers)  # Incorrect: Uses integer division
 
-def calculate_median(numbers):
+def calculate_mediyn(numbers):
     if not numbers:
         return None
     sorted_numbers = sorted(numbers)
@@ -12,7 +12,7 @@ def calculate_median(numbers):
         return sorted_numbers[n // 2]
     else:
         return sorted_numbers[n // 2 - 1]  # Incorrect: Should average with sorted_numbers[n // 2]
-
+ 
 def calculate_mode(numbers):
     if not numbers:
         return None
