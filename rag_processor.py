@@ -17,9 +17,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Token management constants
-MAX_PROMPT_TOKENS = 100_000  # 100k tokens total for prompt
-MAX_RESPONSE_TOKENS = 20_000  # Reserve 20k tokens for LLM output
-MAX_CODE_TOKENS = 15_000     # Maximum tokens for individual code blocks
+MAX_PROMPT_TOKENS = 100000  # 100k tokens total for prompt
+MAX_RESPONSE_TOKENS = 4096  # Reduced from 20000 to be within GPT-4o's limit of 16384
+MAX_CODE_TOKENS = 15000     # Maximum tokens for individual code blocks
 
 load_dotenv()
 
@@ -69,6 +69,7 @@ class RAGProcessor:
             return "Feedback generation requires OpenAI API key."
         
         model_name = "gpt-4o"
+        logger.info(f"Using OpenAI model: {model_name}")
         
         # Truncate large code blocks if needed 
         student_code = safe_truncate_code(student_code, MAX_CODE_TOKENS, model=model_name)
@@ -113,24 +114,51 @@ class RAGProcessor:
         
         # Call OpenAI API
         try:
+            logger.info(f"Sending request to OpenAI API with {final_token_count} tokens")
+            
+            # Prepare request data
+            request_data = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": "You are a helpful programming assistant."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7,
+                "max_tokens": MAX_RESPONSE_TOKENS
+            }
+            
+            # Log request details (excluding full prompt for brevity)
+            logger.info(f"Request parameters: model={model_name}, temperature=0.7, max_tokens={MAX_RESPONSE_TOKENS}")
+            
+            # Make API call
             response = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {self.openai_api_key}",
                     "Content-Type": "application/json"
                 },
-                json={
-                    "model": model_name,
-                    "messages": [
-                        {"role": "system", "content": "You are a helpful programming assistant."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    "temperature": 0.7,
-                    "max_tokens": MAX_RESPONSE_TOKENS
-                }
+                json=request_data,
+                timeout=60  # Increased timeout for larger requests
             )
-            response.raise_for_status()
+            
+            # Log response details
+            logger.info(f"OpenAI API Response Status: {response.status_code}")
+            
+            # Handle non-2xx responses
+            if response.status_code != 200:
+                error_detail = response.json() if response.content else "No error details provided"
+                logger.error(f"OpenAI API error: {response.status_code}, Details: {error_detail}")
+                if response.status_code == 400:
+                    logger.error("400 Bad Request: Check model availability, token limits, and request format")
+                elif response.status_code == 401:
+                    logger.error("401 Unauthorized: Invalid API key")
+                elif response.status_code == 429:
+                    logger.error("429 Too Many Requests: Rate limit exceeded")
+                return f"Error from OpenAI API: {response.status_code} - {response.reason}. Falling back to Ollama."
+            
+            # Process successful response
             result = response.json()
+            logger.info("Successfully received response from OpenAI")
             return result["choices"][0]["message"]["content"]
         except Exception as e:
             logger.error(f"OpenAI feedback generation failed: {e}")
@@ -212,9 +240,24 @@ class RAGProcessor:
     def generate_feedback(self, student_code: str, ideal_code: str, 
                         structure_analysis: Dict, similar_contexts: List[Dict]) -> str:
         """Generate feedback using either OpenAI or Ollama based on configuration."""
+        logger.info(f"Generating feedback with use_openai={self.use_openai}, openai_key_exists={bool(self.openai_api_key)}")
+        
         if self.use_openai and self.openai_api_key:
-            return self.generate_feedback_with_openai(student_code, ideal_code, structure_analysis, similar_contexts)
+            logger.info("Using OpenAI for feedback generation")
+            try:
+                openai_feedback = self.generate_feedback_with_openai(student_code, ideal_code, structure_analysis, similar_contexts)
+                
+                # If the feedback indicates an error, fall back to Ollama
+                if openai_feedback.startswith("Error from OpenAI API") or openai_feedback.startswith("Could not generate feedback"):
+                    logger.warning("OpenAI feedback generation failed, falling back to Ollama")
+                    return self.generate_feedback_with_ollama(student_code, ideal_code, structure_analysis, similar_contexts)
+                
+                return openai_feedback
+            except Exception as e:
+                logger.error(f"Error using OpenAI for feedback: {str(e)}. Falling back to Ollama.")
+                return self.generate_feedback_with_ollama(student_code, ideal_code, structure_analysis, similar_contexts)
         else:
+            logger.info("Using Ollama for feedback generation")
             return self.generate_feedback_with_ollama(student_code, ideal_code, structure_analysis, similar_contexts)
     
     def generate_comparison_report(self, student_code: str, ideal_code: str, 

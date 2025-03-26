@@ -321,6 +321,13 @@ async def evaluate(
             status_code=400,
             detail="OpenAI API key is not configured. Please set the OPENAI_API_KEY environment variable."
         )
+    
+    # Also check OpenAI API key if using OpenAI for feedback generation
+    if use_openai_feedback and not os.getenv("OPENAI_API_KEY"):
+        raise HTTPException(
+            status_code=400,
+            detail="OpenAI API key is required for feedback generation but is not configured."
+        )
         
     # Create temporary files to extract the uploads
     temp_dir_student = tempfile.mkdtemp()
@@ -329,6 +336,7 @@ async def evaluate(
     try:
         # Update RAG processor configuration for feedback generation
         rag_processor.use_openai = use_openai_feedback
+        logger.info(f"Evaluation started with model={model}, use_openai_feedback={use_openai_feedback}")
         
         # TEMPORARY FILE HANDLING:
         # File Path Requirement: The zipfile library needs a filesystem path to extract ZIP contents, but FastAPI's UploadFile only provides a file-like object in memory, not a path.
@@ -642,6 +650,40 @@ async def main_page(request: Request, submission: str = None, ideal: str = None,
                 margin: 10px 0;
                 font-size: 0.9em;
             }
+            .token-info {
+                color: #004085;
+                background-color: #cce5ff;
+                border: 1px solid #b8daff;
+                border-radius: 4px;
+                padding: 10px;
+                margin: 10px 0;
+                font-size: 0.9em;
+            }
+            .token-info table {
+                width: 100%;
+                border-collapse: collapse;
+                margin-top: 10px;
+            }
+            .token-info table th, .token-info table td {
+                border: 1px solid #b8daff;
+                padding: 8px;
+                text-align: left;
+            }
+            .token-info table th {
+                background-color: #e6f2ff;
+            }
+            #tokenCheckBtn {
+                background-color: #007bff;
+                margin-right: 10px;
+            }
+            #tokenCheckBtn:disabled {
+                background-color: #cccccc;
+            }
+            .button-group {
+                display: flex;
+                flex-direction: row;
+                gap: 10px;
+            }
             .progress-container {
                 margin: 20px 0;
                 display: none;
@@ -707,7 +749,60 @@ async def main_page(request: Request, submission: str = None, ideal: str = None,
                 background-color: #ffffff;
                 border-radius: 4px;
                 white-space: pre-wrap;
-                font-family: monospace;
+                font-family: inherit;
+                line-height: 1.5;
+            }
+            .structure-summary {
+                margin: 15px 0;
+                padding: 15px;
+                background-color: #f8f9fa;
+                border-radius: 5px;
+                border-left: 4px solid #6c757d;
+            }
+            .structure-summary ul {
+                margin: 10px 0;
+                padding-left: 20px;
+            }
+            .structure-summary li {
+                margin-bottom: 5px;
+            }
+            .toggle-details {
+                background-color: #e9ecef;
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                padding: 5px 10px;
+                font-size: 0.85em;
+                cursor: pointer;
+                margin-top: 10px;
+            }
+            .toggle-details:hover {
+                background-color: #dee2e6;
+            }
+            .structure-details {
+                margin-top: 10px;
+                padding: 10px;
+                background-color: #f1f3f5;
+                border-radius: 4px;
+                max-height: 300px;
+                overflow: auto;
+            }
+            .similar-contexts {
+                margin: 15px 0;
+                padding: 15px;
+                background-color: #f0f4f8;
+                border-radius: 5px;
+                border-left: 4px solid #4a6fa5;
+            }
+            .similar-contexts ul {
+                margin: 10px 0;
+                padding-left: 20px;
+            }
+            .recommendations {
+                margin: 15px 0;
+                padding: 15px;
+                background-color: #eaf5ea;
+                border-radius: 5px;
+                border-left: 4px solid #28a745;
             }
             pre {
                 background-color: #f8f9fa;
@@ -737,7 +832,11 @@ async def main_page(request: Request, submission: str = None, ideal: str = None,
                         <option value="openai">OpenAI</option>
                     </select>
                 </div>
-                <button type="submit" id="evaluateBtn">Evaluate</button>
+                <div id="tokenInfoContainer"></div>
+                <div class="form-group button-group">
+                    <button type="button" id="tokenCheckBtn" style="display: none;">Check Tokens</button>
+                    <button type="submit" id="evaluateBtn">Evaluate</button>
+                </div>
             </form>
             <div id="loading">
                 <div class="spinner"></div>
@@ -766,12 +865,7 @@ async def main_page(request: Request, submission: str = None, ideal: str = None,
                 const stepElement = document.createElement('div');
                 stepElement.id = step.id;
                 stepElement.className = 'progress-step';
-                stepElement.innerHTML = `
-                    <span class="step-icon">⏳</span>
-                    <span class="step-label">${step.label}</span>
-                    <span class="step-details">${step.details}</span>
-                    <span class="step-status">Pending</span>
-                `;
+                stepElement.innerHTML = "<span class=\"step-icon\">⏳</span><span class=\"step-label\">" + step.label + "</span><span class=\"step-details\">" + step.details + "</span><span class=\"step-status\">Pending</span>";
                 progressStepsContainer.appendChild(stepElement);
             });
 
@@ -781,30 +875,197 @@ async def main_page(request: Request, submission: str = None, ideal: str = None,
             const result = document.getElementById('result');
             const evaluateBtn = document.getElementById('evaluateBtn');
             const modelSelect = document.getElementById('model');
+            const tokenCheckBtn = document.getElementById('tokenCheckBtn');
+            const tokenInfoContainer = document.getElementById('tokenInfoContainer');
+            
+            // Variable to track if tokens have been checked for OpenAI
+            let tokensChecked = false;
 
-            // OpenAI model selection warning
+            // Define toggleDetails function globally
+            function toggleDetails(button) {
+                const detailsDiv = button.nextElementSibling;
+                if (detailsDiv.style.display === "none") {
+                    detailsDiv.style.display = "block";
+                    button.textContent = "Hide Full Structure Analysis";
+                } else {
+                    detailsDiv.style.display = "none";
+                    button.textContent = "Show Full Structure Analysis";
+                }
+            }
+
+            // Function to reset token check status
+            function resetTokenCheck() {
+                tokensChecked = false;
+                tokenInfoContainer.innerHTML = '';
+                tokenInfoContainer.style.display = 'none';
+            }
+            
+            // Function to check if files are selected
+            function checkFilesSelected() {
+                const submission = document.getElementById('submission').files.length > 0;
+                const ideal = document.getElementById('ideal').files.length > 0;
+                return submission && ideal;
+            }
+
+            // OpenAI model selection warning and token check button handling
             modelSelect.addEventListener('change', function() {
+                // Reset token check status on model change
+                resetTokenCheck();
+                
                 if (this.value === 'openai') {
                     // Show warning about OpenAI API key
                     if (!document.getElementById('openai-warning')) {
                         const warning = document.createElement('div');
                         warning.id = 'openai-warning';
                         warning.className = 'openai-warning';
-                        warning.innerHTML = `
-                            <p><strong>⚠️ Warning:</strong> OpenAI model requires an API key to be configured in the server's environment variables.</p>
-                            <p>If no API key is configured, the evaluation will fail.</p>
-                        `;
+                        warning.innerHTML = "<p><strong>⚠️ Warning:</strong> OpenAI model requires an API key to be configured in the server's environment variables.</p><p>If no API key is configured, the evaluation will fail.</p><p>Please check token usage before evaluation to ensure your submission is within token limits.</p>";
                         this.parentNode.appendChild(warning);
                     }
+                    
+                    // Show token check button and disable evaluate button until tokens are checked
+                    tokenCheckBtn.style.display = 'inline-block';
                 } else {
                     // Remove warning if switching back to Ollama
                     const warning = document.getElementById('openai-warning');
                     if (warning) {
                         warning.remove();
                     }
+                    
+                    // Hide token check button and enable evaluate button if files are selected
+                    tokenCheckBtn.style.display = 'none';
+                }
+                
+                // Update button states based on current model and file selection
+                updateButtonStates();
+            });
+            
+            // File input change events to update button states
+            document.getElementById('submission').addEventListener('change', updateButtonStates);
+            document.getElementById('ideal').addEventListener('change', updateButtonStates);
+            
+            // Function to update button states based on current selections
+            function updateButtonStates() {
+                const filesSelected = checkFilesSelected();
+                
+                if (modelSelect.value === 'openai') {
+                    // For OpenAI, require token check before enabling evaluate
+                    tokenCheckBtn.disabled = !filesSelected;
+                    evaluateBtn.disabled = !tokensChecked || !filesSelected;
+                } else {
+                    // For Ollama, just enable evaluate if files are selected
+                    evaluateBtn.disabled = !filesSelected;
+                }
+                
+                // Reset token check if files change and tokens were previously checked
+                if (tokensChecked) {
+                    resetTokenCheck();
+                }
+            }
+            
+            // Token check button click handler
+            tokenCheckBtn.addEventListener('click', async () => {
+                if (!checkFilesSelected()) {
+                    alert('Please select both student submission and ideal solution files.');
+                    return;
+                }
+                
+                // Disable button and show loading state
+                tokenCheckBtn.disabled = true;
+                tokenCheckBtn.textContent = 'Checking...';
+                
+                const formData = new FormData(uploadForm);
+                
+                try {
+                    const response = await fetch('/estimate-tokens', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`Error: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // Display token information
+                    let tokenInfoHtml = `
+                        <div class="token-info">
+                            <h4>Token Usage Estimate</h4>
+                            <table>
+                                <tr>
+                                    <th>Component</th>
+                                    <th>Tokens</th>
+                                </tr>
+                                <tr>
+                                    <td>Student Code</td>
+                                    <td>${data.student_tokens}</td>
+                                </tr>
+                                <tr>
+                                    <td>Ideal Solution</td>
+                                    <td>${data.ideal_tokens}</td>
+                                </tr>
+                                <tr>
+                                    <td>Structure Analysis</td>
+                                    <td>${data.structure_overhead}</td>
+                                </tr>
+                                <tr>
+                                    <td>Similar Code Retrieval</td>
+                                    <td>${data.retrieval_overhead}</td>
+                                </tr>
+                                <tr>
+                                    <td>Prompt Template</td>
+                                    <td>${data.prompt_overhead}</td>
+                                </tr>
+                                <tr>
+                                    <th>Total Estimate</th>
+                                    <th>${data.total_estimate}</th>
+                                </tr>
+                            </table>
+                            <p style="margin-top: 10px; ${data.is_safe ? 'color: #28a745;' : 'color: #dc3545;'}">
+                                <strong>${data.is_safe ? '✅ Token usage is within safe limits.' : '⚠️ Token usage exceeds recommended limits!'}</strong>
+                            </p>
+                            <p>Functions: ${data.student_functions} student / ${data.ideal_functions} ideal</p>
+                        </div>
+                    `;
+                    
+                    tokenInfoContainer.innerHTML = tokenInfoHtml;
+                    tokenInfoContainer.style.display = 'block';
+                    
+                    // Mark tokens as checked and enable evaluate button
+                    tokensChecked = true;
+                    evaluateBtn.disabled = false;
+                    
+                } catch (error) {
+                    console.error('Token estimation error:', error);
+                    tokenInfoContainer.innerHTML = `
+                        <div class="error-message">
+                            <h4>Token Estimation Error</h4>
+                            <p>${error.message}</p>
+                        </div>
+                    `;
+                    tokenInfoContainer.style.display = 'block';
+                    tokensChecked = false;
+                    evaluateBtn.disabled = true;
+                } finally {
+                    // Reset button state
+                    tokenCheckBtn.disabled = false;
+                    tokenCheckBtn.textContent = 'Check Tokens';
                 }
             });
 
+            // Initialize button states
+            document.addEventListener('DOMContentLoaded', function() {
+                // Initially set button states based on file selection and model
+                updateButtonStates();
+                
+                // Show/hide token check button based on selected model
+                if (modelSelect.value === 'openai') {
+                    tokenCheckBtn.style.display = 'inline-block';
+                } else {
+                    tokenCheckBtn.style.display = 'none';
+                }
+            });
+            
             uploadForm.addEventListener('submit', async (e) => {
                 e.preventDefault();
                 
@@ -832,6 +1093,15 @@ async def main_page(request: Request, submission: str = None, ideal: str = None,
                 
                 try {
                     console.log('Submitting form...');
+                    
+                    // Add OpenAI feedback flag if OpenAI is selected
+                    if (modelSelect.value === 'openai') {
+                        formData.append('use_openai_feedback', 'true');
+                        console.log('Using OpenAI for feedback generation');
+                    } else {
+                        console.log('Using Ollama for feedback generation');
+                    }
+                    
                     const response = await fetch('/evaluate', {
                         method: 'POST',
                         body: formData
@@ -867,12 +1137,21 @@ async def main_page(request: Request, submission: str = None, ideal: str = None,
                             <div class="function-report">
                                 <h3>Function: ${funcName}</h3>
                                 <p class="status-${report.status.toLowerCase()}">
-                                    Status: ${report.status} (Similarity: ${report.similarity})
+                                    Status: ${report.status} (Similarity: ${(report.similarity * 100).toFixed(2)}%)
                                 </p>
                                 
-                                <div class="structure-analysis">
-                                    <h4>Structure Analysis:</h4>
-                                    <pre>${JSON.stringify(report.structure_analysis, null, 2)}</pre>
+                                <div class="structure-summary">
+                                    <h4>Code Analysis Summary:</h4>
+                                    <ul>
+                                        <li><strong>Missing Variables:</strong> ${report.structure_analysis.variables.missing_variables.length ? report.structure_analysis.variables.missing_variables.join(', ') : 'None'}</li>
+                                        <li><strong>Extra Variables:</strong> ${report.structure_analysis.variables.extra_variables.length ? report.structure_analysis.variables.extra_variables.join(', ') : 'None'}</li>
+                                        <li><strong>Missing Control Structures:</strong> ${report.structure_analysis.control_flow.missing_control_structures.length ? report.structure_analysis.control_flow.missing_control_structures.join(', ') : 'None'}</li>
+                                        <li><strong>Missing Function Calls:</strong> ${report.structure_analysis.function_calls.missing_calls.length ? report.structure_analysis.function_calls.missing_calls.join(', ') : 'None'}</li>
+                                    </ul>
+                                    <button class="toggle-details" onclick="toggleDetails(this)">Show Full Structure Analysis</button>
+                                    <div class="structure-details" style="display: none;">
+                                        <pre>${JSON.stringify(report.structure_analysis, null, 2)}</pre>
+                                    </div>
                                 </div>
                                 
                                 <div class="recommendations">
@@ -883,14 +1162,18 @@ async def main_page(request: Request, submission: str = None, ideal: str = None,
                                 </div>
                                 
                                 <div class="similar-contexts">
-                                    <h4>Similar Implementations:</h4>
-                                    <pre>${JSON.stringify(report.similar_contexts, null, 2)}</pre>
+                                    <h4>Similar Functions:</h4>
+                                    <ul>
+                                        ${report.similar_contexts.map(ctx => `
+                                            <li><strong>${ctx.function_name}</strong> (Similarity: ${(ctx.similarity * 100).toFixed(2)}%)</li>
+                                        `).join('')}
+                                    </ul>
                                 </div>
 
                                 ${report.feedback ? `
                                 <div class="feedback-section">
                                     <h4>AI Feedback:</h4>
-                                    <pre class="feedback-content">${report.feedback}</pre>
+                                    <div class="feedback-content">${report.feedback.replace(/\n/g, '<br>')}</div>
                                 </div>
                                 ` : ''}
                             </div>
@@ -910,16 +1193,19 @@ async def main_page(request: Request, submission: str = None, ideal: str = None,
                         stepElement.querySelector('.step-status').textContent = 'Error';
                     });
 
-                    result.innerHTML = `
-                        <div class="error-message">
-                            <h3>Error During Evaluation</h3>
-                            <p>${error.message}</p>
-                        </div>
-                    `;
+                    result.innerHTML = "<div class=\"error-message\"><h3>Error During Evaluation</h3><p>" + error.message + "</p></div>";
                     result.style.display = 'block';
                 } finally {
                     loading.style.display = 'none';
-                    evaluateBtn.disabled = false;
+                    
+                    // Reset button states after evaluation
+                    updateButtonStates();
+                    
+                    // If using OpenAI and tokens were checked, reset the token check
+                    if (modelSelect.value === 'openai' && tokensChecked) {
+                        tokenCheckBtn.textContent = 'Check Tokens';
+                        tokenCheckBtn.disabled = !checkFilesSelected();
+                    }
                 }
             });
         </script>
